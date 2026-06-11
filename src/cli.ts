@@ -17,7 +17,8 @@ import { runMcpServer } from "./mcp.js";
 const HELP = `amc — ask my Claude. Peer-to-peer scoped queries between teammates' Claudes.
 
 setup
-  amc init [--name <you>]            create identity, register with Claude Code
+  amc init                           interactive setup wizard (identity, shares,
+                                     daemon, invite) — flags skip it: [--name <you>]
   amc setup-claude [--remove]        (re)register the ask_peer MCP tools
   amc doctor                         check everything is wired up
   amc whoami [--json]                show your identity
@@ -30,12 +31,15 @@ share what peers may use (default: nothing)
 connect with teammates
   amc invite [--host <ip|dns>] [--ttl 7d] [--multi] [--list] [--revoke <token>]
   amc connect <invite-code> [--name alias]
-  amc requests                       list pending connection requests
-  amc accept <name> | reject <name> [--block]
+  amc requests                       browse pending requests (↑↓ + enter approves,
+                                     r rejects, b blocks; then pick grants)
+  amc accept <name> | reject <name> [--block]    (non-interactive forms)
   amc peers [--ping] [--json]
   amc peer <remove|set-host|limits|block|unblock> <peer> [...]
 
 grant scope per peer (default: nothing)
+  amc grant <peer>                   interactive checkbox picker (space toggles,
+                                     enter saves; unchecking revokes)
   amc grant <peer> <project|mcp> <share-name>
   amc grant <peer> --list
   amc revoke <peer> <project|mcp> <share-name> | amc revoke <peer> --all

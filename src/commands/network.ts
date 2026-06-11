@@ -12,6 +12,9 @@ import { loadRequests, removeRequest } from "../state/requests.js";
 import { approveRequest } from "../daemon/handlers.js";
 import { helloPeer, pingPeer } from "../client.js";
 import { b64u, fromB64u, parseDuration, guessLanAddress, shortTs } from "../util.js";
+import { isInteractive, selectList, confirm, ageString, c } from "../tui.js";
+import { grantPicker } from "./sharing.js";
+import { loadShares } from "../state/shares.js";
 
 interface InviteCode {
   n: string; // owner name
@@ -20,6 +23,27 @@ interface InviteCode {
   ik: string;
   ek: string;
   t: string; // invite token
+}
+
+/** Create an invite token and encode the full connect code. */
+export function buildInvite(
+  host: string,
+  ttl: string,
+  multi: boolean,
+  label: string
+): { code: string; token: string } {
+  const identity = requireIdentity();
+  const config = loadConfig();
+  const token = createInvite(parseDuration(ttl), multi, label);
+  const code: InviteCode = {
+    n: identity.name,
+    h: host,
+    p: config.port,
+    ik: identity.ik,
+    ek: identity.ek,
+    t: token,
+  };
+  return { code: "amc1." + b64u(Buffer.from(JSON.stringify(code), "utf8")), token };
 }
 
 export async function cmdInvite(flags: {
@@ -57,17 +81,7 @@ export async function cmdInvite(flags: {
       "could not detect an address to advertise — pass --host <ip-or-hostname> (Tailscale DNS names work great)"
     );
   }
-  const ttlMs = parseDuration(flags.ttl ?? "7d");
-  const token = createInvite(ttlMs, !!flags.multi, flags.label ?? "");
-  const code: InviteCode = {
-    n: identity.name,
-    h: host,
-    p: config.port,
-    ik: identity.ik,
-    ek: identity.ek,
-    t: token,
-  };
-  const encoded = "amc1." + b64u(Buffer.from(JSON.stringify(code), "utf8"));
+  const { code: encoded, token } = buildInvite(host, flags.ttl ?? "7d", !!flags.multi, flags.label ?? "");
   if (flags.json) {
     console.log(JSON.stringify({ code: encoded, host, port: config.port, token }));
     return;
@@ -152,10 +166,84 @@ export async function cmdRequests(flags: { json?: boolean }): Promise<void> {
     console.log("no pending connection requests");
     return;
   }
-  for (const [fp, r] of entries) {
-    console.log(`${r.name}  ${fp}  from ${r.ip}  at ${shortTs(r.ts)}`);
+  if (!isInteractive()) {
+    for (const [fp, r] of entries) {
+      console.log(`${r.name}  ${fp}  from ${r.ip}  at ${shortTs(r.ts)}`);
+    }
+    console.log(`\naccept with: amc accept <name>   reject with: amc reject <name>`);
+    return;
   }
-  console.log(`\naccept with: amc accept <name>   reject with: amc reject <name>`);
+  await interactiveRequests();
+}
+
+/** Arrow-key browser over pending requests: enter/a approve, r reject, b block. */
+async function interactiveRequests(): Promise<void> {
+  for (;;) {
+    const entries = Object.entries(loadRequests());
+    if (entries.length === 0) {
+      console.log(c.dim("no more pending requests"));
+      return;
+    }
+    const items = entries.map(([fp, r]) => ({
+      label: r.name,
+      hint: `  ${fp} · from ${r.ip} · ${ageString(r.ts)}`,
+    }));
+    const result = await selectList(`pending connection requests (${entries.length})`, items, {
+      footer: "↑↓ move · enter/a approve · r reject · b reject+block · q quit",
+      keys: ["a", "r", "b"],
+    });
+    if (!result) return;
+
+    const [fp, pending] = entries[result.index];
+    switch (result.key) {
+      case "return":
+      case "a": {
+        const { name } = approveRequest(fp);
+        removeRequest(fp);
+        if (pending.token) consumeInvite(pending.token);
+        console.log(`${c.green("✓")} accepted "${name}" — they can reach your daemon, but have no grants yet`);
+        await offerGrants(name);
+        break;
+      }
+      case "r":
+        removeRequest(fp);
+        console.log(`${c.yellow("✗")} rejected ${pending.name}`);
+        break;
+      case "b": {
+        removeRequest(fp);
+        const peers = loadPeers();
+        peers[fp] = {
+          name: uniquePeerName(pending.name),
+          ik: pending.ik,
+          ek: pending.ek,
+          host: pending.host,
+          port: pending.port,
+          approved: false,
+          blocked: true,
+          via: "hello",
+          addedAt: Date.now(),
+          grants: { projects: [], mcp: [] },
+        };
+        savePeers(peers);
+        console.log(`${c.red("✗")} rejected and blocked ${pending.name}`);
+        break;
+      }
+    }
+  }
+}
+
+async function offerGrants(peerName: string): Promise<void> {
+  const shares = loadShares();
+  const total = Object.keys(shares.projects).length + Object.keys(shares.mcp).length;
+  if (total === 0) {
+    console.log(c.dim(`nothing to grant yet — create shares first: amc share project <name> <path>`));
+    return;
+  }
+  if (await confirm(`grant scope to ${peerName} now?`)) {
+    await grantPicker(peerName);
+  } else {
+    console.log(c.dim(`later: amc grant ${peerName}`));
+  }
 }
 
 function findRequest(nameOrFp: string): { fp: string } {

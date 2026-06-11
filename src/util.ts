@@ -86,6 +86,19 @@ export function osTmpDir(): string {
   return tmpdir();
 }
 
+/** Check whether a local amc daemon answers on the given port. */
+export async function healthCheck(port: number, host = "127.0.0.1"): Promise<boolean> {
+  try {
+    const res = await fetch(`http://${host}:${port}/v1/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    const body = (await res.json()) as { amc?: boolean };
+    return body.amc === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Best-effort first non-internal IPv4 address for invite hints. */
 export async function guessLanAddress(): Promise<string | null> {
   const { networkInterfaces } = await import("node:os");

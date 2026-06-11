@@ -3,10 +3,15 @@ import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
+import { basename, resolve } from "node:path";
 import { loadConfig, saveConfig, ensureHome, paths } from "../config.js";
-import { createIdentity, loadIdentity, fingerprint } from "../crypto/identity.js";
-import { loadShares } from "../state/shares.js";
+import { createIdentity, loadIdentity, fingerprint, type Identity } from "../crypto/identity.js";
+import { loadShares, addProjectShare } from "../state/shares.js";
 import { loadRequests } from "../state/requests.js";
+import { healthCheck, expandTilde, guessLanAddress } from "../util.js";
+import { isInteractive, ask, confirm, c } from "../tui.js";
+import { startDaemonDetached } from "./ops.js";
+import { buildInvite } from "./network.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,6 +21,20 @@ function cliPath(): string {
 
 export async function cmdInit(flags: { name?: string; "skip-claude"?: boolean }): Promise<void> {
   ensureHome();
+  // Quick path: flags given or no TTY (scripts, tests).
+  if (flags.name || flags["skip-claude"] || !isInteractive()) {
+    quickInit(flags);
+    if (!flags["skip-claude"]) {
+      const ok = await registerWithClaude();
+      if (!ok) console.log("could not auto-register with Claude Code — run `amc setup-claude` later.");
+    }
+    printNextSteps(loadIdentity()!.name);
+    return;
+  }
+  await initWizard();
+}
+
+function quickInit(flags: { name?: string }): Identity {
   let identity = loadIdentity();
   if (identity) {
     console.log(`identity already exists: ${identity.name} (${fingerprint(identity.ik)})`);
@@ -29,25 +48,101 @@ export async function cmdInit(flags: { name?: string; "skip-claude"?: boolean })
     config.name = identity.name;
     saveConfig(config);
   }
+  return identity;
+}
 
-  if (!flags["skip-claude"]) {
-    const ok = await registerWithClaude();
-    if (!ok) {
-      console.log("could not auto-register with Claude Code — run `amc setup-claude` later.");
-    }
-  }
-
+function printNextSteps(name: string): void {
   console.log(`
 next steps:
   1. share something:        amc share project myproj ~/code/myproj --description "What it is"
   2. start your daemon:      amc daemon start
   3. invite a teammate:      amc invite            (send them the code)
      they run:               amc connect <code>
-  4. approve them:           amc accept <their-name>
-  5. grant them scope:       amc grant <their-name> project myproj
-their Claude can then call ask_peer("${identity.name}", "...") — answered by a fresh
+  4. approve them:           amc requests          (interactive — enter approves)
+  5. grant them scope:       amc grant <their-name>
+their Claude can then call ask_peer("${name}", "...") — answered by a fresh
 sandboxed session limited to what you granted. Watch everything: amc audit
 `);
+}
+
+/** Interactive first-run questionnaire: identity → Claude Code → shares → daemon → invite. */
+async function initWizard(): Promise<void> {
+  console.log(c.bold("\namc setup — peer-to-peer scoped queries between teammates' Claudes\n"));
+
+  // 1. Identity
+  let identity = loadIdentity();
+  if (identity) {
+    console.log(`${c.green("✓")} identity exists: ${identity.name} (${fingerprint(identity.ik)})`);
+  } else {
+    const name = await ask("your name — peers will see this", process.env.USER || hostname().split(".")[0] || "me");
+    identity = createIdentity(name);
+    console.log(`${c.green("✓")} created identity "${name}" (${fingerprint(identity.ik)})`);
+  }
+  const config = loadConfig();
+  if (!config.name) {
+    config.name = identity.name;
+    saveConfig(config);
+  }
+
+  // 2. Claude Code integration
+  if (await confirm("register the ask_peer tools with Claude Code?")) {
+    const ok = await registerWithClaude();
+    if (!ok) console.log(`${c.red("✗")} auto-registration failed — run \`amc setup-claude\` later`);
+  }
+
+  // 3. Shares
+  console.log("");
+  const existingShares = loadShares();
+  const shareCount = Object.keys(existingShares.projects).length + Object.keys(existingShares.mcp).length;
+  if (shareCount > 0) {
+    console.log(`${c.green("✓")} already sharing ${shareCount} item(s) — \`amc share list\``);
+  }
+  console.log(c.dim("shares are what peers CAN be granted. Nothing is visible until you grant it per peer."));
+  let first = shareCount === 0;
+  while (await confirm(first ? "share a project directory now?" : "share another project?", first)) {
+    first = false;
+    const path = await ask("project path (e.g. ~/code/myproj)");
+    if (!path) break;
+    try {
+      const defaultName = basename(resolve(expandTilde(path)))
+        .replace(/[^a-zA-Z0-9._-]/g, "-")
+        .slice(0, 32) || "project";
+      const name = await ask("share name", defaultName);
+      const description = await ask("one-line description — helps peers' Claudes route questions here");
+      addProjectShare(name, path, description);
+      console.log(`${c.green("✓")} sharing "${name}" (read-only)`);
+    } catch (err) {
+      console.log(`${c.red("✗")} ${(err as Error).message}`);
+    }
+  }
+
+  // 4. Daemon
+  console.log("");
+  if (await healthCheck(config.port)) {
+    console.log(`${c.green("✓")} daemon already running on :${config.port}`);
+  } else if (await confirm("start your daemon now? (required for peers to reach you)")) {
+    const ok = await startDaemonDetached();
+    console.log(ok ? `${c.green("✓")} daemon running on :${config.port}` : `${c.red("✗")} daemon failed — check \`amc daemon logs\``);
+  }
+
+  // 5. Invite
+  console.log("");
+  if (await confirm("create an invite code for a teammate?")) {
+    const guessed = config.advertiseHost || (await guessLanAddress()) || "";
+    const host = await ask("address teammates can reach you at (LAN IP or Tailscale name)", guessed);
+    if (host) {
+      if (host !== config.advertiseHost) {
+        config.advertiseHost = host;
+        saveConfig(config);
+      }
+      const { code } = buildInvite(host, "7d", false, "init-wizard");
+      console.log(`\nsend this to your teammate (valid 7 days, single use):\n\n  ${c.cyan(code)}\n`);
+      console.log(`they run:   ${c.bold(`amc connect ${code.slice(0, 18)}…`)}`);
+      console.log(`then you:   ${c.bold("amc requests")}   ${c.dim("(interactive — enter approves, then pick grants)")}`);
+    }
+  }
+
+  console.log(c.dim("\nall set. Useful commands: amc requests · amc peers --ping · amc audit · amc pause"));
 }
 
 export async function registerWithClaude(): Promise<boolean> {
@@ -116,18 +211,6 @@ export async function cmdWhoami(flags: { json?: boolean }): Promise<void> {
   console.log(`fingerprint: ${fingerprint(identity.ik)}`);
   console.log(`port:        ${config.port}`);
   console.log(`daemon:      ${daemonUp ? "running" : "stopped"}${config.paused ? " (paused)" : ""}`);
-}
-
-export async function healthCheck(port: number, host = "127.0.0.1"): Promise<boolean> {
-  try {
-    const res = await fetch(`http://${host}:${port}/v1/health`, {
-      signal: AbortSignal.timeout(1500),
-    });
-    const body = (await res.json()) as { amc?: boolean };
-    return body.amc === true;
-  } catch {
-    return false;
-  }
 }
 
 export async function cmdDoctor(): Promise<void> {

@@ -7,12 +7,31 @@ import { resolvePeer } from "../state/peers.js";
 import { askPeer } from "../client.js";
 import { readAudit } from "../audit.js";
 import { runDaemon } from "../daemon/server.js";
-import { healthCheck } from "./core.js";
-import { parseDuration, shortTs } from "../util.js";
+import { parseDuration, shortTs, healthCheck } from "../util.js";
 import { fingerprint } from "../crypto/identity.js";
 
 function cliPath(): string {
   return fileURLToPath(new URL("../cli.js", import.meta.url));
+}
+
+/** Start the daemon as a detached background process; true once healthy. */
+export async function startDaemonDetached(): Promise<boolean> {
+  requireIdentity();
+  ensureHome();
+  const config = loadConfig();
+  if (await healthCheck(config.port)) return true;
+  const logFd = openSync(paths().daemonLog, "a");
+  const child = spawn(process.execPath, [cliPath(), "daemon", "run"], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: process.env,
+  });
+  child.unref();
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (await healthCheck(config.port)) return true;
+  }
+  return false;
 }
 
 export async function cmdDaemon(positional: string[], flags: { n?: string }): Promise<void> {
@@ -26,28 +45,17 @@ export async function cmdDaemon(positional: string[], flags: { n?: string }): Pr
       return;
 
     case "start": {
-      requireIdentity();
-      ensureHome();
       if (await healthCheck(config.port)) {
         console.log(`daemon already running on :${config.port}`);
         return;
       }
-      const logFd = openSync(paths().daemonLog, "a");
-      const child = spawn(process.execPath, [cliPath(), "daemon", "run"], {
-        detached: true,
-        stdio: ["ignore", logFd, logFd],
-        env: process.env,
-      });
-      child.unref();
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 250));
-        if (await healthCheck(config.port)) {
-          console.log(`daemon started on ${config.bind}:${config.port} (log: ${paths().daemonLog})`);
-          return;
-        }
+      const ok = await startDaemonDetached();
+      if (ok) {
+        console.log(`daemon started on ${config.bind}:${config.port} (log: ${paths().daemonLog})`);
+      } else {
+        console.error(`daemon did not come up — check ${paths().daemonLog}`);
+        process.exitCode = 1;
       }
-      console.error(`daemon did not come up — check ${paths().daemonLog}`);
-      process.exitCode = 1;
       return;
     }
 

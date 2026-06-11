@@ -9,6 +9,7 @@ import {
   type McpShare,
 } from "../state/shares.js";
 import { loadPeers, savePeers, resolvePeer } from "../state/peers.js";
+import { isInteractive, multiSelect, c } from "../tui.js";
 
 interface ClaudeMcpServerDef {
   type?: string;
@@ -174,10 +175,75 @@ function parseEnvFlags(env: unknown): Record<string, string> {
   return out;
 }
 
+/**
+ * Interactive grant manager: checkbox list of all shares with the peer's
+ * current grants pre-checked. Saving applies the full new set (so unchecking
+ * revokes). Returns silently if the user cancels.
+ */
+export async function grantPicker(peerNameOrFp: string): Promise<void> {
+  const { fp, peer } = resolvePeer(peerNameOrFp);
+  if (!peer.approved) {
+    throw new Error(`${peer.name} is not an approved peer — accept their request first (\`amc requests\`)`);
+  }
+  const shares = loadShares();
+  const items: Array<{ kind: "project" | "mcp"; name: string; label: string; hint: string }> = [
+    ...Object.entries(shares.projects).map(([name, p]) => ({
+      kind: "project" as const,
+      name,
+      label: `project ${name}`,
+      hint: `  ${p.path}${p.description ? ` · ${p.description}` : ""}`,
+    })),
+    ...Object.entries(shares.mcp).map(([name, m]) => ({
+      kind: "mcp" as const,
+      name,
+      label: `mcp ${name}`,
+      hint: `  tools: ${m.tools.join(", ")}${m.description ? ` · ${m.description}` : ""}`,
+    })),
+  ];
+  if (items.length === 0) {
+    console.log("nothing to grant — create shares first: amc share project <name> <path>");
+    return;
+  }
+  const preChecked = items
+    .map((item, i) =>
+      (item.kind === "project" ? peer.grants.projects : peer.grants.mcp).includes(item.name) ? i : -1
+    )
+    .filter((i) => i >= 0);
+
+  const selected = await multiSelect(
+    `grants for ${peer.name} — checked = granted`,
+    items.map(({ label, hint }) => ({ label, hint })),
+    preChecked
+  );
+  if (selected === null) {
+    console.log(c.dim("cancelled — grants unchanged"));
+    return;
+  }
+  const projects: string[] = [];
+  const mcp: string[] = [];
+  for (const i of selected) {
+    (items[i].kind === "project" ? projects : mcp).push(items[i].name);
+  }
+  const peers = loadPeers();
+  peers[fp].grants = { projects, mcp };
+  savePeers(peers);
+  console.log(
+    `${c.green("✓")} ${peer.name} can now use — projects: [${projects.join(", ") || "none"}]  mcp: [${mcp.join(", ") || "none"}]`
+  );
+  if (mcp.length > 0) {
+    console.log(c.dim("reminder: MCP shares run with their configured credentials — scope the credential, not just the tools."));
+  }
+}
+
 export async function cmdGrant(positional: string[], flags: { list?: boolean }): Promise<void> {
   const [peerName, kind, shareName] = positional;
-  if (!peerName) throw new Error("usage: amc grant <peer> <project|mcp> <share-name>");
+  if (!peerName) throw new Error("usage: amc grant <peer> [project|mcp <share-name>]");
   const { fp, peer } = resolvePeer(peerName);
+
+  // Bare `amc grant <peer>` in a terminal → interactive picker.
+  if (!kind && !flags.list && isInteractive()) {
+    return grantPicker(peerName);
+  }
 
   if (flags.list || !kind) {
     console.log(`grants for ${peer.name}:`);

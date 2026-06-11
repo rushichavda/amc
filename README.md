@@ -24,8 +24,10 @@ Teams using Claude individually do manual relay work: A asks B a question about 
 
 ```bash
 npm install -g ask-my-claude
-amc init            # creates your identity + registers ask_peer with Claude Code
+amc init            # interactive setup wizard
 ```
+
+`amc init` walks you through everything one question at a time: your name → Claude Code registration → which projects to share → starting the daemon → an invite code to send a teammate. (Flags like `--name` skip the wizard for scripting.)
 
 Requirements: Node ≥ 20, [Claude Code](https://claude.com/claude-code) ≥ 2.x logged in. macOS/Linux.
 
@@ -34,21 +36,21 @@ Requirements: Node ≥ 20, [Claude Code](https://claude.com/claude-code) ≥ 2.x
 **Bob (the owner):**
 
 ```bash
-amc init --name bob
-amc share project payments ~/code/payments --description "Payments service"
-amc daemon start
-amc invite                      # prints an invite code — send it to Alice over Slack
-# ...after Alice connects:
-amc accept alice
-amc grant alice project payments
+amc init                        # wizard: name, share ~/code/payments, start daemon, print invite
+# send the invite code to Alice over Slack ... after she connects:
+amc requests                    # interactive: ↑↓ to navigate, enter approves,
+                                # r rejects, b blocks — then a checkbox picker
+                                # to grant shares on the spot (space toggles, enter saves)
 ```
 
 **Alice (the asker):**
 
 ```bash
-amc init --name alice
+amc init                        # wizard (skip the sharing steps)
 amc connect amc1.eyJua...       # Bob's invite code
 ```
+
+Change a peer's access any time with `amc grant alice` — same checkbox picker, pre-checked with current grants; unchecking revokes. Non-interactive equivalents (`amc accept`, `amc grant <peer> project <name>`, `--json` flags) exist for every step.
 
 That's it. Now in Alice's normal Claude Code session:
 
