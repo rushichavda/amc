@@ -1,0 +1,37 @@
+{
+  "name": "ask-my-claude",
+  "version": "0.1.0",
+  "description": "Peer-to-peer 'ask my Claude': let teammates query a scoped, sandboxed Claude session backed by context you explicitly share. No API key required — runs on your existing Claude Code login.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "amc": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "SECURITY.md",
+    "ARCHITECTURE.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "test": "npm run build && node --test 'test/*.test.js'",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "mcp",
+    "peer-to-peer",
+    "team",
+    "ai-agent"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
