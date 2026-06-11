@@ -62,7 +62,9 @@ Every inbound question spawns a brand-new `claude -p` process with **no memory, 
 | ⏱️ **Rate + kill-switch** | Per-peer hourly/daily caps, per-query timeout, and `amc pause` to stop everything instantly. |
 | 🔑 **Authenticated transport** | Ed25519 identities, X25519 + AES-256-GCM sealed envelopes, signed requests, replay protection. |
 
-Prompt injection is *mitigated, not solved* — read [SECURITY.md](SECURITY.md) for the full threat model and the residual risks before you grant anything sensitive.
+**Messaging:** peer-to-peer over a custom **sealed-envelope** protocol — per-message ephemeral X25519 → ECDH → HKDF-SHA256 → AES-256-GCM, with Ed25519-signed payloads, recipient binding, a ±120s freshness window, and replay protection, carried over plain HTTP (the payload is already end-to-end encrypted). Inside Claude Code it speaks standard **MCP / JSON-RPC 2.0**.
+
+> ⚠️ **Alpha — read before trusting it with sensitive data.** The crypto *primitives* are Node's audited OpenSSL-backed `crypto`, but the *protocol composition is bespoke and unaudited.* Prompt injection is *mitigated, not solved.* A shared MCP server runs with its real credential (scope the credential, not just the tools). There's no forward secrecy yet. The full, honest list is in **[SECURITY.md](SECURITY.md)** — read it before you grant anything sensitive.
 
 ## Install
 
