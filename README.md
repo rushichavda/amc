@@ -1,145 +1,150 @@
-# amc — ask my Claude
+<div align="center">
 
-Peer-to-peer scoped queries between teammates' Claudes.
+# amc — Ask My Claude
 
-Your teammate asks *their* Claude a question about *your* domain — your projects, your services. Their Claude calls yours. Yours answers from a **fresh, sandboxed session** that can only see what you explicitly granted. Nobody copy-pastes anything, and your private Claude context is never touched.
+**Your teammate's Claude asks yours. Yours answers from a sandbox that only sees what you shared.**
 
+No copy-paste relay. No API key. No cloud. Just your existing Claude Code login.
+
+![status](https://img.shields.io/badge/status-alpha-orange)
+![license](https://img.shields.io/badge/license-MIT-blue)
+![node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)
+![runtime deps](https://img.shields.io/badge/runtime%20deps-0-success)
+![built for](https://img.shields.io/badge/built%20for-Claude%20Code-8A63D2)
+
+</div>
+
+---
+
+You're on a team. Someone asks you a question that lives in *your* world — your repo, your Slack, your roadmap. You don't remember the detail, so you ask your own Claude, wait, and paste the answer back. You just spent five minutes being a **human pipe between two AI systems.**
+
+`amc` removes the pipe. Their Claude asks yours directly — and yours answers from a **fresh, sandboxed session that can only touch what you explicitly shared.** Your private Claude (memory, history, your own MCP tools) is never in the loop.
+
+```text
+You, in your normal Claude Code session:
+
+  ▸ ask nadeesh how the foundry ingestion pipeline is deployed
+
+Claude:
+  (asked nadeesh's Claude — sandboxed, ~15s)
+
+  Foundry's ingestion deploys via the Tuesday Jenkins job WIDGET-42. The
+  pipeline is mid-migration from Python to Rust, gated on one more systems
+  hire. Source: ROADMAP.md in nadeesh's shared "platform" project.
 ```
-alice's Claude ──ask_peer("bob", "how does payments deploy?")──▶ bob's amc daemon
-                                                                      │
-                                                                      ▼
-                                                          fresh sandboxed claude -p
-                                                          (only bob's granted scope)
-                                                                      │
-alice's Claude ◀───────────── scoped answer ──────────────────────────┘
+
+You never left your editor. Nadeesh never touched his keyboard. His Claude read exactly one folder he chose to share — nothing else.
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+  A["Your Claude<br/>(calls ask_peer)"] -->|encrypted, signed query| D["Teammate's amc daemon<br/>verify · check grant · rate-limit"]
+  D --> S["fresh sandboxed claude -p<br/>only the granted scope"]
+  S --> G["their shared<br/>project / MCP tools"]
+  S -->|scoped answer| A
+  M["their main Claude<br/>memory · history · private MCP"] -. never in the request path .- D
 ```
 
-**No API key. No cloud relay. No server.** Inference for inbound queries runs through the owner's existing Claude Code login (subscription or API key — whatever they already use). Install, connect, done.
+Every inbound question spawns a brand-new `claude -p` process with **no memory, no history, none of the owner's customizations**, and a tool surface locked to exactly what was granted. Inference runs on the owner's existing Claude Code login — **so there's no API key and no per-query bill.** Every query and answer is logged locally (`amc audit`).
 
-## Why
+## Why it's safe by default
 
-Teams using Claude individually do manual relay work: A asks B a question about B's codebase → B asks their Claude → B copy-pastes the answer back. B is a human pipe between two AI systems. amc removes the pipe while keeping B in control of exactly what's reachable.
+| | |
+|---|---|
+| 🔒 **Default deny** | A new peer can reach you but sees *nothing* until you grant a specific share, per peer. |
+| 🧊 **Fresh sandbox** | `--safe-mode` (no CLAUDE.md / hooks / plugins / your MCP servers), `--no-session-persistence`, empty workspace. |
+| 📁 **Read-only & path-jailed** | Granted a folder → `Read`/`Grep`/`Glob` over *that folder only*. No writes, bash, or network. `.env`, keys, `~/.ssh`, `~/.claude*` are deny-listed. |
+| 🧪 **Untrusted-input hardening** | The question and all tool output are treated as data; embedded "ignore your instructions" attacks are refused. |
+| 🚫 **Output filter** | Answers are scanned for credential/PII shapes and blocked on a hit. |
+| ⏱️ **Rate + kill-switch** | Per-peer hourly/daily caps, per-query timeout, and `amc pause` to stop everything instantly. |
+| 🔑 **Authenticated transport** | Ed25519 identities, X25519 + AES-256-GCM sealed envelopes, signed requests, replay protection. |
+
+Prompt injection is *mitigated, not solved* — read [SECURITY.md](SECURITY.md) for the full threat model and the residual risks before you grant anything sensitive.
 
 ## Install
 
-```bash
-npm install -g ask-my-claude
-amc init            # interactive setup wizard
-```
-
-`amc init` walks you through everything one question at a time: your name → Claude Code registration → which projects to share → starting the daemon → an invite code to send a teammate. (Flags like `--name` skip the wizard for scripting.)
-
-Requirements: Node ≥ 20, [Claude Code](https://claude.com/claude-code) ≥ 2.x logged in. macOS/Linux.
-
-## Quickstart (two teammates: Bob shares, Alice asks)
-
-**Bob (the owner):**
+> Alpha, not yet on npm. Install from source:
 
 ```bash
-amc init                        # wizard: name, share ~/code/payments, start daemon, print invite
-# send the invite code to Alice over Slack ... after she connects:
-amc requests                    # interactive: ↑↓ to navigate, enter approves,
-                                # r rejects, b blocks — then a checkbox picker
-                                # to grant shares on the spot (space toggles, enter saves)
+git clone https://github.com/rushichavda/amc.git
+cd amc && npm install && npm link
+amc init          # interactive setup wizard
 ```
 
-**Alice (the asker):**
+Requirements: **Node ≥ 20** and **[Claude Code](https://claude.com/claude-code) ≥ 2.x, logged in.** macOS/Linux.
+
+`amc init` walks you through it one question at a time — your name → register with Claude Code → which projects to share → start the daemon → an invite code to send a teammate.
+
+## Quickstart — two teammates
+
+**Bob shares his backend and approves Alice:**
 
 ```bash
-amc init                        # wizard (skip the sharing steps)
-amc connect amc1.eyJua...       # Bob's invite code
+amc init                       # wizard: name, share ~/code/payments, start daemon, print invite
+# send the printed invite code to Alice ...
+amc requests                   # ↑↓ navigate · enter approve · then a checkbox
+                               # picker to grant shares (space toggle, enter save)
 ```
 
-Change a peer's access any time with `amc grant alice` — same checkbox picker, pre-checked with current grants; unchecking revokes. Non-interactive equivalents (`amc accept`, `amc grant <peer> project <name>`, `--json` flags) exist for every step.
+**Alice connects, then just talks to her Claude:**
 
-That's it. Now in Alice's normal Claude Code session:
+```bash
+amc init
+amc connect amc1.eyJua...      # Bob's invite code
+```
 
-> **Alice:** how does bob's payments service get deployed?
+> **Alice (in Claude Code):** how does bob's payments service get deployed?
 >
-> **Claude:** *(calls `ask_peer("bob", "How does the payments service get deployed?")`)*
-> According to bob's Claude: deploys happen every Tuesday via the Jenkins job WIDGET-42…
+> **Claude:** *(calls `ask_peer`)* According to bob's Claude: deploys run on merge to `main` via GitHub Actions…
 
-Alice can also ask from the terminal: `amc ask bob "how do deploys work?"`
+Prefer the terminal? `amc ask bob "how do deploys work?"` does the same thing.
 
-## What can be shared
+## What you can share
 
-| Share type | Command | What the peer's queries can do |
+| Type | Command | What a peer's query can do |
 |---|---|---|
-| **Project** | `amc share project api ~/code/api` | Read-only `Read`/`Grep`/`Glob` over that directory. No writes, no bash, no network. `.env`, keys, and credentials are deny-listed. |
-| **MCP server** | `amc share mcp slack --from-claude slack --tools slack_read_channel` | Exactly the named tools on that server — imported from your existing Claude Code MCP config. |
+| **Project** | `amc share project api ~/code/api --description "..."` | Read-only `Read`/`Grep`/`Glob` over that one directory. |
+| **MCP server** | `amc share mcp slack --from-claude slack --tools slack_read_channel` | Exactly the named tools on that server, imported from your Claude Code config. |
 
-Grants are **per peer, default nothing**. Alice granted `payments` doesn't see your other five projects. A second teammate gets their own grant set.
+Grants are **per peer**. Alice granted `api` can't see your other projects, and a second teammate gets their own grant set. Change access anytime with `amc grant <peer>` (a checkbox picker pre-filled with current grants — unchecking revokes), or yank everything with `amc revoke <peer> --all`.
 
-> **Scoping MCP credentials:** a shared MCP server runs with the credentials in its config. The tool allowlist controls *which operations* a peer can invoke; the credential controls *what data those operations can see*. For real within-service scoping (e.g. only some Slack channels), point the share at a credential that's limited to that scope — e.g. a Slack app that's only a member of the channels you want visible.
+> **Scoping a shared service:** the tool allowlist controls *which operations* a peer can invoke; the underlying credential controls *what data those operations see*. For true within-service scoping (e.g. only some Slack channels), point the share at a credential limited to that scope — a Slack app that's only in those channels, a fine-grained GitHub PAT for one repo, etc.
 
-## How a peer query runs (the security model, short version)
+## Plugs straight into Claude Code
 
-Every inbound query spawns a **brand-new `claude -p` process** with:
+`amc init` registers a user-scope MCP server (works in **any** Claude Code session, any directory). Your Claude gets two tools:
 
-- `--safe-mode` — no CLAUDE.md, no hooks, no plugins, no skills, none of your MCP servers
-- `--no-session-persistence` — leaves no transcript
-- `--tools "Read,Grep,Glob"` (or *no* built-in tools if only MCP is granted)
-- `--strict-mcp-config` — only the granted MCP servers exist
-- permission rules pinning reads to granted paths, deny rules for `~/.ssh`, `~/.claude*`, `.env`, keys
-- a hardened system prompt that treats the question and all tool output as untrusted data
-- an output filter that blocks answers containing credential/PII patterns
-- per-peer rate limits (default 10/hour, 40/day) and a wall-clock timeout
+- **`ask_peer(peer, question)`** — ask a teammate's Claude
+- **`list_peers()`** — who's reachable and what they've shared with you
 
-Your main Claude session — memory, history, your MCP connections — is **never in the request path**. Every query, grant used, and answer is logged to `~/.amc/audit.log` (`amc audit`).
+The daemon and sandbox run entirely outside Claude Code; only a thin client lives inside your session.
 
-On the wire: Ed25519 identities, X25519 + AES-256-GCM sealed envelopes, signed requests with replay protection. Invite codes bootstrap trust; the owner confirms every new peer by hand.
-
-Read [SECURITY.md](SECURITY.md) for the full threat model — **including the residual risks**. Prompt injection is mitigated, not solved.
-
-## Day-to-day commands
+## Everyday commands
 
 ```bash
-amc peers --ping          # who's connected, who's online, what they granted you
-amc audit --since 2h      # everything that flowed through your daemon
-amc pause | amc resume    # kill-switch for inbound queries
-amc revoke alice --all    # take everything back
-amc peer limits alice --per-hour 5
-amc doctor                # check the whole setup
+amc peers --ping          # who's connected, who's online, what they shared with you
+amc audit --since 2h      # every query that touched your machine, with answers
+amc pause | amc resume    # inbound kill-switch
+amc doctor                # check the whole setup end to end
 ```
 
-## Team patterns
+## Built for real teams
 
-- **Multiple projects, distinct owners** — each owner shares their own projects; `list_peers` tells everyone's Claude who has what, so questions route themselves.
-- **Remote teams** — any reachable address works. [Tailscale](https://tailscale.com) is the recommended transport: `amc invite --host your-machine.tailnet.ts.net` gives you encrypted connectivity across networks with zero port forwarding.
-- **Onboarding** — share the repo + a docs folder to the new teammate, let them interrogate it through their own Claude.
-- **Offline owners** — askers get a clean "peer unreachable"; the daemon answers only while the owner's machine is up.
+- **Many projects, distinct owners** — each person shares their own; `list_peers` lets everyone's Claude route questions to whoever owns the answer.
+- **Remote teams** — any reachable address works. [Tailscale](https://tailscale.com) is the smooth path: `amc invite --host you.your-tailnet.ts.net` — encrypted, no port-forwarding.
+- **Onboarding** — share the repo + docs with a new hire and let them interrogate it through their own Claude.
 
-## How it plugs into Claude Code
-
-amc registers itself as a **user-scope MCP server** (`claude mcp add-json amc ...` — done automatically by `amc init`). Your main Claude sees two tools:
-
-- `ask_peer(peer, question, context?)` — ask a teammate's Claude
-- `list_peers()` — who's reachable and what they've granted you
-
-The daemon and sandbox live entirely outside Claude Code; only the thin MCP client runs inside your session.
-
-## Configuration
-
-`~/.amc/config.json` (edit via `amc config set <key> <value>`):
-
-| Key | Default | Meaning |
-|---|---|---|
-| `port` / `bind` | `4711` / `0.0.0.0` | Daemon listen address |
-| `advertiseHost` | auto | Address put in invites (set your Tailscale name here) |
-| `sandbox.model` | `sonnet` | Model for inbound-query sandboxes (`haiku` for cheap/fast) |
-| `sandbox.timeoutMs` | `180000` | Per-query wall clock |
-| `sandbox.maxConcurrent` | `2` | Parallel sandboxes |
-| `limitsDefault` | `10/hr, 40/day` | Default per-peer rate limits |
-| `filter.enabled` | `true` | Sensitive-output blocking |
-
-## Development
+## Develop
 
 ```bash
-npm install && npm test     # zero runtime deps; tests use a fake claude binary
+npm install && npm test     # zero runtime deps; 16 tests, no real Claude needed (fake-claude fixture)
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for components, wire protocol, and design rationale.
+[ARCHITECTURE.md](ARCHITECTURE.md) covers components, the wire protocol, and why it diverges from a Rust/API design. [SECURITY.md](SECURITY.md) is the threat model.
 
 ## License
 
-MIT
+[MIT](LICENSE)
